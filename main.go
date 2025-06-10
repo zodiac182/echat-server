@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -83,20 +85,25 @@ var UploadDir string = "./public"
 
 func uploadFile(c *gin.Context) {
 	file, err := c.FormFile("file")
+	ticketId := c.PostForm("ticketId")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "msg": "文件获取失败"})
 		return
 	}
 
-	// 确保目录存在
-	err = os.MkdirAll(UploadDir, os.ModePerm)
+	// 确保以ticket命名的子目录存在
+	childUploadDir := fmt.Sprintf("%s/%s", UploadDir, ticketId)
+	err = os.MkdirAll(childUploadDir, os.ModePerm)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "msg": "无法创建上传目录"})
 		return
 	}
 
+	// 文件名的命名为ticketId/时间戳_原始文件名， 用于表示放在ticketId目录下
 	// 防止文件重名
-	filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), file.Filename)
+	ext := filepath.Ext(file.Filename)
+	filename := fmt.Sprintf("%s/%d_%d%s", ticketId, time.Now().UnixNano(), rand.Intn(1000), ext)
+
 	filepath := fmt.Sprintf("%s/%s", UploadDir, filename)
 
 	err = c.SaveUploadedFile(file, filepath)
@@ -106,7 +113,6 @@ func uploadFile(c *gin.Context) {
 	}
 
 	// 可以通过URL访问（前提是用 static 公开了 uploads 路径）
-
 	c.JSON(http.StatusOK, gin.H{
 		"code":     0,
 		"msg":      "上传成功",

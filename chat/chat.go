@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sync"
@@ -21,16 +22,15 @@ var upgrader = websocket.Upgrader{
 
 // 定义ticket
 type Ticket struct {
-	TicketId       string `json:"ticketId"`
-	Title          string `json:"title"`
-	Description    string `json:"description"`
-	Status         string `json:"status"`
-	CreateBy       string `json:"createBy"`
-	CreaterId      string `json:"createrId"`
-	OwnedBy        string `json:"ownedBy"`
-	OwnerId        string `json:"ownerId"`
-	OnlineStatus   bool   `json:"onlineStatus"`
-	UnreadMsgCount int    `json:"unreadMsgCount"`
+	TicketId    string `json:"ticketId"`
+	SN          string `json:"sn"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	CreateBy    string `json:"createBy"`
+	CreaterId   string `json:"createrId"`
+	OwnedBy     string `json:"ownedBy"`
+	OwnerId     string `json:"ownerId"`
 }
 
 func AddClientToRoom(roomID string, client *Client) {
@@ -117,11 +117,16 @@ func HandleClientSocket(c *gin.Context) {
 		fmt.Println("用户已经在房间中")
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	// 启动读写 goroutine
 	go client.writePump()
-	go client.readPump()
+	go func() {
+		client.readPump()
+		cancel() // 停掉 SyncTicketsInfo
+	}()
 
-	go client.StartHeartbeatChecker() // 启动心跳检测
+	go client.StartHeartbeatChecker(ctx) // 启动心跳检测
 
 	client.getHistoryMessage() // 加载历史消息
 
@@ -153,5 +158,5 @@ func HandleServiceLogin(c *gin.Context) {
 		UserName: UserName,
 	}
 
-	c.JSON(http.StatusOK, cs.GetTickets(UserId))
+	c.JSON(http.StatusOK, cs.GetTickets(UserName))
 }

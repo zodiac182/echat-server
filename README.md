@@ -34,21 +34,36 @@ go run main.go
 docker build -t echat-server:latest .
 ```
 ### 2. 运行容器
+#### 1. create docker volume
 ```
 # 创建docker volume
 docker volume create echat-server-uploads
-
+```
+#### 2. set env  
+```
+# 设置env
 export DB_PASSWORD=<数据库密码>
 export DB_NAME=<数据库名>
+export ITSM_SERVER_URL=<itsm服务地址>
+```
+```
+# example
+export DB_PASSWORD='password#123'
+export DB_NAME='echat'
+export ITSM_SERVER_URL='http://10.8.7.171:9999/api/itsmServer/getInstance/detail/listbyhandler'
+```
 
-# 运行容器
+
+#### 3. 运行容器
+```
 docker run -dit --name echat-server \
     --network echat-network \
     -v echat-server-uploads:/echat/public \
     -e DB_HOST='postgres' \
     -e DB_PORT='5432' \
-    -e DB_USER='postgres' \
+    -e DB_USERNAME='postgres' \
     -e DB_PASSWORD=$DB_PASSWORD \
     -e DB_NAME=$DB_NAME  \
+    -e ITSM_SERVER_URL=$ITSM_SERVER_URL \
     -p 8180:8080 echat-server:latest
 ```

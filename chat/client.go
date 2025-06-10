@@ -3,6 +3,7 @@ package chat
 // 用户系统
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -262,18 +263,23 @@ func (c *Client) disconnect() {
 }
 
 // 客户开启心跳检测
-func (c *Client) StartHeartbeatChecker() {
+func (c *Client) StartHeartbeatChecker(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
-	for {
-		<-ticker.C // 阻塞, 60秒执行一次
-		now := time.Now()
 
-		if now.Sub(c.lastHeartbeat) > 90*time.Second {
-			log.Printf("chat client检测到无效连接，清理: ticketId=%s, userId=%s, userName=%s", c.roomId, c.userId, c.userName)
-			RemoveClientFromRoom(c.roomId, c)
-			c.conn.Close()
-			return // 退出go routine
+	for {
+		select {
+		case <-ticker.C: // 阻塞, 60秒执行一次
+			now := time.Now()
+
+			if now.Sub(c.lastHeartbeat) > 90*time.Second {
+				log.Printf("chat client检测到无效连接，清理: ticketId=%s, userId=%s, userName=%s", c.roomId, c.userId, c.userName)
+				RemoveClientFromRoom(c.roomId, c)
+				c.conn.Close()
+				return // 退出go routine
+			}
+		case <-ctx.Done():
+			return
 		}
 	}
 }

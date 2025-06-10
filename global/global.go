@@ -10,11 +10,12 @@ import (
 )
 
 var (
-	DB_HOST     string
-	DB_USERNAME string
-	DB_PASSWORD string
-	DB_PORT     string
-	DB_NAME     string
+	DB_HOST         string
+	DB_USERNAME     string
+	DB_PASSWORD     string
+	DB_PORT         string
+	DB_NAME         string
+	ITSM_SERVER_URL string
 )
 
 var DB *gorm.DB
@@ -48,4 +49,6 @@ func init() {
 	if DB_NAME == "" {
 		DB_NAME = "echat" // 默认数据库名
 	}
+
+	ITSM_SERVER_URL = os.Getenv("ITSM_SERVER_URL")
 }

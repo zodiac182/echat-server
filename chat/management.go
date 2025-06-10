@@ -19,6 +19,8 @@ type MgrClient struct {
 	conn          *websocket.Conn // websocket连接
 	msg           chan []byte     // 用于发送消息
 	userId        string          // 用户ID
+	userName      string          // 用户名
+	tickets       []*Ticket
 	mu            sync.Mutex
 	lastHeartbeat time.Time // 最后心跳时间
 }
@@ -29,6 +31,7 @@ var mgrClients sync.Map // userId -> *MgrClient
 func HandleMgrClientSocket(c *gin.Context) {
 
 	userId := c.Query("userId")
+	userName := c.Query("userName")
 	// 检查是否已存在连接
 	if oldClient, ok := mgrClients.Load(userId); ok {
 		log.Printf("已有连接，关闭旧连接: %s", userId)
@@ -44,9 +47,10 @@ func HandleMgrClientSocket(c *gin.Context) {
 
 	// 创建客户的websocket对象,用于处理客户端的消息
 	client := &MgrClient{
-		conn:   conn,
-		msg:    make(chan []byte, 1024),
-		userId: userId,
+		conn:     conn,
+		msg:      make(chan []byte, 1024),
+		userId:   userId,
+		userName: userName,
 	}
 	mgrClients.Store(userId, client)
 
@@ -66,55 +70,46 @@ func HandleMgrClientSocket(c *gin.Context) {
 }
 
 // 获取当前用户的在线状态
-func (m *MgrClient) GetTicketsInfo() []*Ticket {
+func (m *MgrClient) GetTickets() []*Ticket {
 	UserId := m.userId
+	UserName := m.userName
 
 	cs := CustomerService{
-		UserId: UserId,
+		UserId:   UserId,
+		UserName: UserName,
 	}
 
-	tickets := cs.GetTickets(UserId)
+	tickets := cs.GetTickets(UserName)
 
-	for _, ticket := range tickets {
-		// 获取未读消息数量
-		var count int64
-		global.DB.Model(&model.Message{}).Where("to_user_id =? and ticket_id =? and read_status =?", m.userId, ticket.TicketId, false).Count(&count)
-		ticket.UnreadMsgCount = int(count)
-		// log.Printf("查询： to_user_id = %s, ticket_id = %s, read_status = %t, count = %d\n", m.userId, ticket.TicketId, false, count)
+	m.tickets = tickets
 
-		// 获取对方的在线状态
-		roomIns, ok := rooms.Load(ticket.TicketId)
-		if !ok {
-			// log.Println("room not exist:", ticket.TicketId)
-			continue
-		}
-
-		room := roomIns.(*sync.Map)
-		room.Range(func(key, value any) bool {
-			client := value.(*Client)
-			// 获取对方的在线状态
-			//TODO：写一个维持状态的方法
-			if client.userId == ticket.CreaterId {
-				ticket.OnlineStatus = true
-			}
-			return true
-		})
-	}
 	return tickets
 }
 
-func (c *MgrClient) readPump() {
+// 获取未读消息的数量
+func (m *MgrClient) GetUnreadMsg() *[]map[string]interface{} {
+
+	// 先获取当前用户的未读消息数量
+	var counts []map[string]interface{}
+
+	global.DB.Model(&model.Message{}).Where("to_user_id =? and read_status =?", m.userId, false).Group("ticket_id").Select("ticket_id, count(*) as count").Scan(&counts)
+
+	log.Printf("counts: %v\n", counts)
+	return &counts
+}
+
+func (m *MgrClient) readPump() {
 	// 为每一个用户提供一个go rountine
 	// 用于从客户端读取消息并处理
 	// 用于处理用户的输入
-	log.Println("readPump 启动", c.userId)
+	log.Println("readPump 启动", m.userId)
 	defer func() {
-		c.disconnect()
-		log.Println("readPump关闭", c.userId)
+		m.disconnect()
+		log.Println("readPump关闭", m.userId)
 	}()
 
 	for {
-		_, msg, err := c.conn.ReadMessage()
+		_, msg, err := m.conn.ReadMessage()
 		// log.Printf("receive message: %s\n", string(msg))
 		if err != nil {
 			break
@@ -125,7 +120,7 @@ func (c *MgrClient) readPump() {
 		}
 
 		//  收到ping消息，
-		c.lastHeartbeat = time.Now()
+		m.lastHeartbeat = time.Now()
 
 	}
 }
@@ -180,7 +175,8 @@ func (c *MgrClient) StartHeartbeatChecker(ctx context.Context) {
 	}
 }
 
-func (c *MgrClient) sendTicketsInfo(msg []byte) {
+// 发送消息
+func (c *MgrClient) sendMsg(msg []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// 判断连接是否已关闭（假设 conn 为 *websocket.Conn）
@@ -194,34 +190,34 @@ func (c *MgrClient) sendTicketsInfo(msg []byte) {
 	case c.msg <- msg:
 		// 成功发送
 	default:
-		log.Println("channel 已满或已关闭，关闭连接")
-		c.disconnect()
+		log.Println("channel 已满或已关闭")
+		// c.disconnect()
 		return
 	}
-
 }
 
-// 同步状态信息
-func (c *MgrClient) SyncTicketsInfo(ctx context.Context) {
-	log.Println("SyncTicketsInfo 启动", c.userId)
+// 同步信息，在启动时同步ticket信息、未读消息、在线状态
+// 定时同步未读消息、在线状态
+func (m *MgrClient) SyncTicketsInfo(ctx context.Context) {
+	log.Println("SyncTicketsInfo 启动", m.userId)
 	defer func() {
-		c.disconnect()
-		log.Println("SyncTicketsInfo 结束", c.userId)
+		log.Println("SyncTicketsInfo 结束", m.userId)
+		// m.disconnect()
 	}()
 
-	send := func() {
-		ticketsInfo := c.GetTicketsInfo()
-		msg, err := json.Marshal(ticketsInfo)
-		if err != nil {
-			log.Println("Marshal ticketsInfo 失败:", err)
-			return
-		}
-		c.sendTicketsInfo(msg)
+	tickets := m.GetTickets()
+
+	unReadMsg := m.GetUnreadMsg()
+
+	data := map[string]interface{}{"tickets": tickets, "unReadMsg": unReadMsg}
+	msg, err := json.Marshal(data)
+	if err != nil {
+		log.Println("Marshal ticketsInfo 失败:", err)
+		return
 	}
+	m.sendMsg(msg)
 
-	send() // 立即执行一次
-
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -229,7 +225,38 @@ func (c *MgrClient) SyncTicketsInfo(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			send()
+			unReadMsg := m.GetUnreadMsg()
+			onlineUsers := m.GetOnlineUsers()
+			data := map[string]interface{}{"unReadMsg": unReadMsg, "onlineUsers": onlineUsers}
+			msg, err := json.Marshal(data)
+			if err != nil {
+				log.Println("Marshal ticketsInfo 失败:", err)
+				return
+			}
+			m.sendMsg(msg)
 		}
 	}
+}
+
+// 获取在线的用户
+func (m *MgrClient) GetOnlineUsers() *[]map[string]interface{} {
+	var onlineUsers []map[string]interface{}
+
+	for _, ticket := range m.tickets {
+		ticketId := ticket.TicketId
+		roomIns, ok := rooms.Load(ticketId)
+		if !ok {
+			continue
+		}
+		room := roomIns.(*sync.Map)
+		room.Range(func(key, value interface{}) bool {
+			userId := key.(string)
+			if userId != m.userId {
+				onlineUsers = append(onlineUsers, map[string]interface{}{"userId": userId, "ticketId": ticketId})
+			}
+			return true
+		})
+	}
+
+	return &onlineUsers
 }
